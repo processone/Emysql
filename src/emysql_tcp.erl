@@ -240,23 +240,37 @@ recv_field_list(Sock, _SeqNum, DefaultTimeout, Acc) ->
 			recv_field_list(Sock, SeqNum1, DefaultTimeout, [Field|Acc])
 	end.
 
-recv_row_data(Sock, FieldList, DefaultTimeout, SeqNum) ->
-    recv_row_data(Sock, FieldList, SeqNum, DefaultTimeout, []).
 
-recv_row_data(Sock, FieldList, _SeqNum, DefaultTimeout, Acc) ->
-	%-% io:format("~nreceive row ~p: ", [Key]),
-	case recv_packet(Sock, DefaultTimeout) of
-		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _WarningCount:16/little, ServerStatus:16/little>>} ->
-			%-% io:format("- eof: ~p~n", [emysql_conn:hstate(ServerStatus)]),
-                        {SeqNum1, lists:reverse(Acc), ServerStatus};
-		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _/binary>>} ->
-			%-% io:format("- eof.~n", []),
-                        {SeqNum1, lists:reverse(Acc), ?SERVER_NO_STATUS};
-		#packet{seq_num = SeqNum1, data = RowData} ->
-			%-% io:format("Seq: ~p raw: ~p~n", [SeqNum1, RowData]),
-			Row = decode_row_data(RowData, FieldList, []),
-			recv_row_data(Sock, FieldList, SeqNum1, DefaultTimeout, [Row|Acc])
-	end.
+recv_row_data(Socket, FieldList, DefaultTimeout, SeqNum) ->
+    recv_row_data(Socket, FieldList, DefaultTimeout, SeqNum, <<>>, []).
+
+recv_row_data(Socket, FieldList, Timeout, SeqNum, Buff, Acc) ->
+    case gen_tcp:recv(Socket, 0, Timeout)  of
+        {ok, Data} ->
+            NewBuff = <<Buff/binary, Data/binary>>,
+            case parse_buffer(FieldList,NewBuff, Acc) of
+                {ok, NotParsed, NewAcc} ->
+                    recv_row_data(Socket, FieldList, Timeout, SeqNum+1, NotParsed, NewAcc);
+                {eof, Seq, NewAcc, ServerStatus} ->
+                    {Seq, lists:reverse(NewAcc), ServerStatus}
+            end;
+        {error, Reason} ->
+            exit({failed_to_recv_row, Reason})
+    end.
+
+parse_buffer(FieldList,<<PacketLength:24/little-integer, SeqNum:8/integer, PacketData:PacketLength/binary, Rest/binary>>, Acc) ->
+    case PacketData of
+        <<?RESP_EOF, _WarningCount:16/little, ServerStatus:16/little>> ->
+            {eof, SeqNum, Acc, ServerStatus};
+        <<?RESP_EOF, _/binary>> ->
+            {eof, SeqNum, Acc, ?SERVER_NO_STATUS};
+        _ ->
+            Row = decode_row_data(PacketData, FieldList, []),
+            parse_buffer(FieldList,Rest, [Row|Acc])
+    end;
+parse_buffer(_FieldList,Buff, Acc) ->
+    {ok, Buff, Acc}.
+
 
 decode_row_data(<<>>, [], Acc) ->
     lists:reverse(Acc);
