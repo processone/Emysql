@@ -44,7 +44,8 @@ send_and_recv_packet(Sock, Packet, SeqNum) ->
             exit({failed_to_send_packet_to_server, Reason})
     end,
     %-% io:format("~p send_and_recv_packet: resonse_list~n", [self()]),
-    case response_list(Sock, ?SERVER_MORE_RESULTS_EXIST) of
+    DefaultTimeout = emysql_app:default_timeout(),
+    case response_list(Sock, DefaultTimeout, ?SERVER_MORE_RESULTS_EXIST) of
         % This is a bit murky. It's compatible with former Emysql versions
         % but sometimes returns a list, e.g. for stored procedures,
         % since an extra OK package is sent at the end of their results.
@@ -56,24 +57,27 @@ send_and_recv_packet(Sock, Packet, SeqNum) ->
             List
     end.
 
-response_list(_, 0) -> [];
+response_list(_, _DefaultTimeout, 0) -> [];
 
-response_list(Sock, ?SERVER_MORE_RESULTS_EXIST) ->
-
-    {Response, ServerStatus} = response(Sock, recv_packet(Sock)),
-    [ Response | response_list(Sock, ServerStatus band ?SERVER_MORE_RESULTS_EXIST)].
+response_list(Sock, DefaultTimeout, ?SERVER_MORE_RESULTS_EXIST) ->
+    {Response, ServerStatus} = response(Sock, DefaultTimeout, recv_packet(Sock, DefaultTimeout)),
+    [ Response | response_list(Sock, DefaultTimeout, ServerStatus band ?SERVER_MORE_RESULTS_EXIST)].
 
 recv_packet(Sock) ->
+    recv_packet(Sock, emysql_app:default_timeout()).
+recv_packet(Sock, DefaultTimeout) ->
     %-% io:format("~p recv_packet~n", [self()]),
     %-% io:format("~p recv_packet: recv_packet_header~n", [self()]),
-    {PacketLength, SeqNum} = recv_packet_header(Sock),
+    {PacketLength, SeqNum} = recv_packet_header(Sock, DefaultTimeout),
     %-% io:format("~p recv_packet: recv_packet_body~n", [self()]),
-    Data = recv_packet_body(Sock, PacketLength),
+    Data = recv_packet_body(Sock, PacketLength, DefaultTimeout),
     %-% io:format("~nrecv_packet: len: ~p, data: ~p~n", [PacketLength, Data]),
     #packet{size=PacketLength, seq_num=SeqNum, data=Data}.
 
+response(Sock, Resp) ->
+    response(Sock, emysql_app:default_timeout(), Resp).
 % OK response: first byte 0. See -1-
-response(_Sock, #packet{seq_num = SeqNum, data = <<0:8, Rest/binary>>}=_Packet) ->
+response(_Sock, _Timeout, #packet{seq_num = SeqNum, data = <<0:8, Rest/binary>>}=_Packet) ->
     %-% io:format("~nresponse (OK): ~p~n", [_Packet]),
     {AffectedRows, Rest1} = emysql_util:length_coded_binary(Rest),
     {InsertId, Rest2} = emysql_util:length_coded_binary(Rest1),
@@ -90,14 +94,14 @@ response(_Sock, #packet{seq_num = SeqNum, data = <<0:8, Rest/binary>>}=_Packet) 
       ServerStatus };
 
 % EOF: MySQL format <= 4.0, single byte. See -2-
-response(_Sock, #packet{seq_num = SeqNum, data = <<?RESP_EOF:8>>}=_Packet) ->
+response(_Sock, _Timeout, #packet{seq_num = SeqNum, data = <<?RESP_EOF:8>>}=_Packet) ->
     %-% io:format("~nresponse (EOF v 4.0): ~p~n", [_Packet]),
     { #eof_packet{
         seq_num = SeqNum },
       ?SERVER_NO_STATUS };
 
 % EOF: MySQL format >= 4.1, with warnings and status. See -2-
-response(_Sock, #packet{seq_num = SeqNum, data = <<?RESP_EOF:8, WarningCount:16/little, ServerStatus:16/little>>}=_Packet) -> % (*)!
+response(_Sock, _Timeout, #packet{seq_num = SeqNum, data = <<?RESP_EOF:8, WarningCount:16/little, ServerStatus:16/little>>}=_Packet) -> % (*)!
     %-% io:format("~nresponse (EOF v 4.1), Warn Count: ~p, Status ~p, Raw: ~p~n", [WarningCount, ServerStatus, _Packet]),
     %-% io:format("- warnings: ~p~n", [WarningCount]),
     %-% io:format("- server status: ~p~n", [emysql_conn:hstate(ServerStatus)]),
@@ -108,7 +112,7 @@ response(_Sock, #packet{seq_num = SeqNum, data = <<?RESP_EOF:8, WarningCount:16/
       ServerStatus };
 
 % ERROR response: MySQL format >= 4.1. See -3-
-response(_Sock, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:16/little, "#", SQLState:5/binary-unit:8, Msg/binary>>}=_Packet) ->
+response(_Sock, _Timeout, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:16/little, "#", SQLState:5/binary-unit:8, Msg/binary>>}=_Packet) ->
     %-% io:format("~nresponse (Response is ERROR): SeqNum: ~p, Packet: ~p~n", [SeqNum, _Packet]),
     { #error_packet{
         seq_num = SeqNum,
@@ -118,7 +122,7 @@ response(_Sock, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:16/little, "#", 
      ?SERVER_NO_STATUS };
 
 % ERROR response: MySQL format <= 4.0. See -3-
-response(_Sock, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:16/little, Msg/binary>>}=_Packet) ->
+response(_Sock, _Timeout, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:16/little, Msg/binary>>}=_Packet) ->
     %-% io:format("~nresponse (Response is ERROR): SeqNum: ~p, Packet: ~p~n", [SeqNum, _Packet]),
     { #error_packet{
         seq_num = SeqNum,
@@ -128,18 +132,18 @@ response(_Sock, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:16/little, Msg/b
      ?SERVER_NO_STATUS };
 
 % DATA response.
-response(Sock, #packet{seq_num = SeqNum, data = Data}=_Packet) ->
+response(Sock, DefaultTimeout, #packet{seq_num = SeqNum, data = Data}=_Packet) ->
     %-% io:format("~nresponse (DATA): ~p~n", [_Packet]),
     {FieldCount, Rest1} = emysql_util:length_coded_binary(Data),
     {Extra, _} = emysql_util:length_coded_binary(Rest1),
-    {SeqNum1, FieldList} = recv_field_list(Sock, SeqNum+1),
+    {SeqNum1, FieldList} = recv_field_list(Sock, SeqNum+1, DefaultTimeout),
     if
         length(FieldList) =/= FieldCount ->
             exit(query_returned_incorrect_field_count);
         true ->
             ok
     end,
-    {SeqNum2, Rows, ServerStatus} = recv_row_data(Sock, FieldList, SeqNum1+1),
+    {SeqNum2, Rows, ServerStatus} = recv_row_data(Sock, FieldList, DefaultTimeout, SeqNum1+1),
     { #result_packet{
         seq_num = SeqNum2,
         field_list = FieldList,
@@ -147,8 +151,7 @@ response(Sock, #packet{seq_num = SeqNum, data = Data}=_Packet) ->
         extra = Extra },
       ServerStatus }.
 
-recv_packet_header(Sock) ->
-    Timeout = emysql_app:default_timeout(),
+recv_packet_header(Sock, Timeout) ->
     %-% io:format("~p recv_packet_header~n", [self()]),
     %-% io:format("~p recv_packet_header: recv~n", [self()]),
     case gen_tcp:recv(Sock, 4, Timeout) of
@@ -177,11 +180,10 @@ recv_packet_header(Sock) ->
 %           exit({failed_to_recv_packet_header, Reason})
 %   end.
 
-recv_packet_body(Sock, PacketLength) ->
-    recv_packet_body(Sock, PacketLength, []).
+recv_packet_body(Sock, PacketLength, DefaultTimeout) ->
+    recv_packet_body(Sock, PacketLength,DefaultTimeout, []).
 
-recv_packet_body(Sock, PacketLength, Acc) ->
-    Timeout = emysql_app:default_timeout(),
+recv_packet_body(Sock, PacketLength, Timeout, Acc) ->
     if
         PacketLength > ?PACKETSIZE->
             case gen_tcp:recv(Sock, ?PACKETSIZE, Timeout) of
@@ -199,11 +201,11 @@ recv_packet_body(Sock, PacketLength, Acc) ->
             end
     end.
 
-recv_field_list(Sock, SeqNum) ->
-    recv_field_list(Sock, SeqNum, []).
+recv_field_list(Sock, SeqNum, DefaultTimeout) ->
+    recv_field_list(Sock, SeqNum, DefaultTimeout,[]).
 
-recv_field_list(Sock, _SeqNum, Acc) ->
-	case recv_packet(Sock) of
+recv_field_list(Sock, _SeqNum, DefaultTimeout, Acc) ->
+	case recv_packet(Sock, DefaultTimeout) of
 		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _WarningCount:16/little, _ServerStatus:16/little>>} -> % (*)!
 			%-% io:format("- eof: ~p~n", [emysql_conn:hstate(_ServerStatus)]),
                         {SeqNum1, lists:reverse(Acc)};
@@ -235,15 +237,15 @@ recv_field_list(Sock, _SeqNum, Acc) ->
 				flags = Flags,
 				decimals = Decimals
 			},
-			recv_field_list(Sock, SeqNum1, [Field|Acc])
+			recv_field_list(Sock, SeqNum1, DefaultTimeout, [Field|Acc])
 	end.
 
-recv_row_data(Sock, FieldList, SeqNum) ->
-        recv_row_data(Sock, FieldList, SeqNum, []).
+recv_row_data(Sock, FieldList, DefaultTimeout, SeqNum) ->
+    recv_row_data(Sock, FieldList, SeqNum, DefaultTimeout, []).
 
-recv_row_data(Sock, FieldList, _SeqNum, Acc) ->
+recv_row_data(Sock, FieldList, _SeqNum, DefaultTimeout, Acc) ->
 	%-% io:format("~nreceive row ~p: ", [Key]),
-	case recv_packet(Sock) of
+	case recv_packet(Sock, DefaultTimeout) of
 		#packet{seq_num = SeqNum1, data = <<?RESP_EOF, _WarningCount:16/little, ServerStatus:16/little>>} ->
 			%-% io:format("- eof: ~p~n", [emysql_conn:hstate(ServerStatus)]),
                         {SeqNum1, lists:reverse(Acc), ServerStatus};
@@ -253,7 +255,7 @@ recv_row_data(Sock, FieldList, _SeqNum, Acc) ->
 		#packet{seq_num = SeqNum1, data = RowData} ->
 			%-% io:format("Seq: ~p raw: ~p~n", [SeqNum1, RowData]),
 			Row = decode_row_data(RowData, FieldList, []),
-			recv_row_data(Sock, FieldList, SeqNum1, [Row|Acc])
+			recv_row_data(Sock, FieldList, SeqNum1, DefaultTimeout, [Row|Acc])
 	end.
 
 decode_row_data(<<>>, [], Acc) ->
