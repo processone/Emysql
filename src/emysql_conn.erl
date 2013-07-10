@@ -36,6 +36,8 @@
 
 -include("emysql.hrl").
 
+-define(TCP_SEND_TIMEOUT, 5000).
+
 set_database(_, undefined) -> ok;
 set_database(_, Empty) when Empty == ""; Empty == <<>> -> ok;
 set_database(Connection, Database) ->
@@ -147,7 +149,7 @@ open_connection(#pool{pool_id=PoolId, host=Host, port=Port, user=User,
      %-% io:format("~p open connection for pool ~p host ~p port ~p user ~p base ~p~n", [self(), PoolId, Host, Port, User, Database]),
      %-% io:format("~p open connection: ... connect ... ~n", [self()]),
     case gen_tcp:connect(Host, Port, [binary, {packet, raw}, {active, false},
-                                      {reuseaddr, true}, {send_timeout, 5000}, {send_timeout_close, true}]) of
+                                      {reuseaddr, true}, {send_timeout, ?TCP_SEND_TIMEOUT}, {send_timeout_close, true}]) of
         {ok, Sock} ->
             #greeting {
                server_version = Version,
@@ -264,7 +266,8 @@ close_connection(Conn) ->
 
 test_connection(Conn, StayLocked) ->
   case catch emysql_tcp:send_and_recv_packet(Conn#emysql_connection.socket, <<?COM_PING>>, 0) of
-    {'EXIT', _} ->
+    {'EXIT', Reason} ->
+      error_logger:error_msg("emysql test connection failed: ~p~n", [Reason]),
       case reset_connection(emysql_conn_mgr:pools(), Conn, StayLocked) of
         NewConn when is_record(NewConn, emysql_connection) ->
           NewConn;
