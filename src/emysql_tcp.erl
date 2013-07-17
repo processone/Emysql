@@ -235,7 +235,8 @@ recv_field_list(Sock, _SeqNum, DefaultTimeout, Acc) ->
 				charset_nr = CharSetNr,
 				length = Length,
 				flags = Flags,
-				decimals = Decimals
+				decimals = Decimals,
+                decoder = cast_fun_for(Type)
 			},
 			recv_field_list(Sock, SeqNum1, DefaultTimeout, [Field|Acc])
 	end.
@@ -290,33 +291,45 @@ decode_row_data(<<254:8, Length:64/little, Data:Length/binary, Tail/binary>>, [F
 %    {Data, Tail} = emysql_util:length_coded_string(Bin),
 %    decode_row_data(Tail, Rest, [type_cast_row_data(Data, Field)|Acc]).
 
-type_cast_row_data(undefined, _) ->
-    undefined;
+cast_fun_for(Type) ->
+    Map = [{?FIELD_TYPE_VARCHAR, fun identity/1},
+     {?FIELD_TYPE_TINY_BLOB, fun identity/1},
+     {?FIELD_TYPE_MEDIUM_BLOB, fun identity/1},
+     {?FIELD_TYPE_LONG_BLOB, fun identity/1},
+     {?FIELD_TYPE_BLOB, fun identity/1},
+     {?FIELD_TYPE_VAR_STRING, fun identity/1},
+     {?FIELD_TYPE_STRING, fun identity/1},
+     {?FIELD_TYPE_TINY, fun to_integer/1},
+     {?FIELD_TYPE_SHORT, fun to_integer/1},
+     {?FIELD_TYPE_LONG, fun to_integer/1},
+     {?FIELD_TYPE_LONGLONG, fun to_integer/1},
+     {?FIELD_TYPE_INT24, fun to_integer/1},
+     {?FIELD_TYPE_YEAR, fun to_integer/1},
+     {?FIELD_TYPE_DECIMAL, fun to_float/1},
+     {?FIELD_TYPE_NEWDECIMAL, fun to_float/1},
+     {?FIELD_TYPE_FLOAT, fun to_float/1},
+     {?FIELD_TYPE_DOUBLE, fun to_float/1},
+     {?FIELD_TYPE_DATE, fun to_date/1},
+     {?FIELD_TYPE_TIME, fun to_time/1},
+     {?FIELD_TYPE_TIMESTAMP, fun to_timestamp/1},
+     {?FIELD_TYPE_DATETIME, fun to_timestamp/1},
+     {?FIELD_TYPE_BIT, fun to_bit/1}
+    ],
+% TODO:
+% ?FIELD_TYPE_NEWDATE
+% ?FIELD_TYPE_ENUM
+% ?FIELD_TYPE_SET
+% ?FIELD_TYPE_GEOMETRY
+    case lists:keyfind(Type, 1, Map) of
+        false ->
+            fun identity/1;
+        {Type, F} ->
+            F
+    end.
 
-type_cast_row_data(Data, #field{type=Type})
-    when Type == ?FIELD_TYPE_VARCHAR;
-        Type == ?FIELD_TYPE_TINY_BLOB;
-        Type == ?FIELD_TYPE_MEDIUM_BLOB;
-        Type == ?FIELD_TYPE_LONG_BLOB;
-        Type == ?FIELD_TYPE_BLOB;
-        Type == ?FIELD_TYPE_VAR_STRING;
-        Type == ?FIELD_TYPE_STRING ->
-    Data;
-
-type_cast_row_data(Data, #field{type=Type})
-    when Type == ?FIELD_TYPE_TINY;
-        Type == ?FIELD_TYPE_SHORT;
-        Type == ?FIELD_TYPE_LONG;
-        Type == ?FIELD_TYPE_LONGLONG;
-        Type == ?FIELD_TYPE_INT24;
-        Type == ?FIELD_TYPE_YEAR ->
-    list_to_integer(binary_to_list(Data));  % note: should not need conversion
-
-type_cast_row_data(Data, #field{type=Type, decimals=_Decimals})
-    when Type == ?FIELD_TYPE_DECIMAL;
-        Type == ?FIELD_TYPE_NEWDECIMAL;
-        Type == ?FIELD_TYPE_FLOAT;
-        Type == ?FIELD_TYPE_DOUBLE ->
+identity(Data) -> Data.
+to_integer(Data) -> list_to_integer(binary_to_list(Data)).
+to_float(Data) ->
     {ok, [Num], _Leftovers} = case io_lib:fread("~f", binary_to_list(Data)) of
                                            % note: does not need conversion
         {error, _} ->
@@ -330,11 +343,8 @@ type_cast_row_data(Data, #field{type=Type, decimals=_Decimals})
         Res ->
           Res
     end,
-    Num;
-    %try_formats(["~f", "~d"], binary_to_list(Data));
-
-type_cast_row_data(Data, #field{type=Type})
-    when Type == ?FIELD_TYPE_DATE ->
+    Num.
+to_date(Data) ->
     case io_lib:fread("~d-~d-~d", binary_to_list(Data)) of  % note: does not need conversion
         {ok, [Year, Month, Day], _} ->
             {date, {Year, Month, Day}};
@@ -342,10 +352,8 @@ type_cast_row_data(Data, #field{type=Type})
             binary_to_list(Data);  % todo: test and possibly conversion to UTF-8
         _ ->
             exit({error, bad_date})
-    end;
-
-type_cast_row_data(Data, #field{type=Type})
-    when Type == ?FIELD_TYPE_TIME ->
+    end.
+to_time(Data) ->
     case io_lib:fread("~d:~d:~d", binary_to_list(Data)) of  % note: does not need conversion
         {ok, [Hour, Minute, Second], _} ->
             {time, {Hour, Minute, Second}};
@@ -353,11 +361,8 @@ type_cast_row_data(Data, #field{type=Type})
             binary_to_list(Data);  % todo: test and possibly conversion to UTF-8
         _ ->
             exit({error, bad_time})
-    end;
-
-type_cast_row_data(Data, #field{type=Type})
-    when Type == ?FIELD_TYPE_TIMESTAMP;
-        Type == ?FIELD_TYPE_DATETIME ->
+    end.
+to_timestamp(Data) ->
     case io_lib:fread("~d-~d-~d ~d:~d:~d", binary_to_list(Data)) of % note: does not need conversion
         {ok, [Year, Month, Day, Hour, Minute, Second], _} ->
             {datetime, {{Year, Month, Day}, {Hour, Minute, Second}}};
@@ -365,22 +370,15 @@ type_cast_row_data(Data, #field{type=Type})
             binary_to_list(Data);   % todo: test and possibly conversion to UTF-8
         _ ->
             exit({error, datetime})
-    end;
+    end.
+to_bit(<<1>>) -> 1;  %%TODO: is this right?.  Shouldn't be <<"1">> ?
+to_bit(<<0>>) -> 0.
 
-type_cast_row_data(Data, #field{type=Type})
-    when Type == ?FIELD_TYPE_BIT ->
-    case Data of
-        <<1>> -> 1;
-        <<0>> -> 0
-    end;
 
-% TODO:
-% ?FIELD_TYPE_NEWDATE
-% ?FIELD_TYPE_ENUM
-% ?FIELD_TYPE_SET
-% ?FIELD_TYPE_GEOMETRY
+type_cast_row_data(Data, #field{decoder = F}) ->
+    F(Data).
 
-type_cast_row_data(Data, _) -> Data.
+
 
 % TODO: [http://forge.mysql.com/wiki/MySQL_Internals_ClientServer_Protocol#COM_QUERY]
 % field_count:          The value is always 0xfe (decimal ?RESP_EOF).
