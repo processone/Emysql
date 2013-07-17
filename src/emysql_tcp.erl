@@ -328,7 +328,12 @@ cast_fun_for(Type) ->
     end.
 
 identity(Data) -> Data.
+-ifdef(binary_to_integer).
+to_integer(Data) -> binary_to_integer(Data).
+-else.
 to_integer(Data) -> list_to_integer(binary_to_list(Data)).
+-endif.
+
 to_float(Data) ->
     {ok, [Num], _Leftovers} = case io_lib:fread("~f", binary_to_list(Data)) of
                                            % note: does not need conversion
