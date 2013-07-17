@@ -271,12 +271,24 @@ parse_buffer(FieldList,<<PacketLength:24/little-integer, SeqNum:8/integer, Packe
 parse_buffer(_FieldList,Buff, Acc) ->
     {ok, Buff, Acc}.
 
-
 decode_row_data(<<>>, [], Acc) ->
     lists:reverse(Acc);
-decode_row_data(Bin, [Field|Rest], Acc) ->
-    {Data, Tail} = emysql_util:length_coded_string(Bin),
+decode_row_data(<<Length:8, Data:Length/binary, Tail/binary>>, [Field|Rest], Acc) 
+        when Length =< 250 ->
+    decode_row_data(Tail, Rest, [type_cast_row_data(Data, Field)|Acc]);
+%% 251 means null
+decode_row_data(<<251:8, Tail/binary>>, [Field|Rest], Acc) ->  
+    decode_row_data(Tail, Rest, [type_cast_row_data(undefined, Field)|Acc]);
+decode_row_data(<<252:8, Length:16/little, Data:Length/binary, Tail/binary>>, [Field|Rest], Acc) ->
+    decode_row_data(Tail, Rest, [type_cast_row_data(Data, Field)|Acc]);
+decode_row_data(<<253:8, Length:24/little, Data:Length/binary, Tail/binary>>, [Field|Rest], Acc) ->
+    decode_row_data(Tail, Rest, [type_cast_row_data(Data, Field)|Acc]);
+decode_row_data(<<254:8, Length:64/little, Data:Length/binary, Tail/binary>>, [Field|Rest], Acc) ->
     decode_row_data(Tail, Rest, [type_cast_row_data(Data, Field)|Acc]).
+
+%decode_row_data(Bin, [Field|Rest], Acc) ->
+%    {Data, Tail} = emysql_util:length_coded_string(Bin),
+%    decode_row_data(Tail, Rest, [type_cast_row_data(Data, Field)|Acc]).
 
 type_cast_row_data(undefined, _) ->
     undefined;
