@@ -49,15 +49,15 @@ do_handshake(Sock, User, Password) ->
 
 recv_greeting(Sock) ->
     %-% io:format("~p recv_greeting~n", [self()]),
-    GreetingPacket = emysql_tcp:recv_packet(Sock),
+    {GreetingPacket,Unparsed} = emysql_tcp:recv_packet(Sock, emysql_app:default_timeout(), <<>>),
     %-% io:format("~p recv_greeting ... received ...~n", [self()]),
     case GreetingPacket#packet.data of
         <<255, _/binary>> ->
             % io:format("error: ", []),
-            {#error_packet{
+            {{#error_packet{
                 code = Code,
                 msg = Msg
-            },_} = emysql_tcp:response(Sock, GreetingPacket),
+            },_}, _Rest} = emysql_tcp:response(Sock, emysql_app:default_timeout(), GreetingPacket, Unparsed),
             % io:format("exit: ~p~n-------------~p~n", [Code, Msg]),
             exit({Code, Msg});
         <<ProtocolVersion:8/integer, Rest1/binary>> ->
