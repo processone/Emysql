@@ -50,6 +50,7 @@ all() ->
      select_by_prepared_statement,
 	 delete_non_existant_procedure,
 	 select_by_stored_procedure,
+     multiple_select,
      encode_floating_point_data].
 
 
@@ -231,6 +232,56 @@ select_by_prepared_statement(_) ->
                        <<>>} = Result,
     ok.
 
+multiple_select(_) ->
+    emysql:execute(test_pool, <<"DELETE FROM hello_table">>),
+
+	emysql:execute(test_pool,
+		<<"INSERT INTO hello_table SET hello_text = 'Hello World!'">>),
+
+	[Result1, Result2] = emysql:execute(test_pool, <<"SELECT * from hello_table; SELECT * from hello_table">>),
+
+	% find this output by clicking on the test name, then case name in test/index.html
+	ct:log("Result1: ~p~n", [Result1]),
+	ct:log("Result2: ~p~n", [Result2]),
+
+	% the test
+	{result_packet,5,  
+                    [#field{
+                            seq_num=_,
+                            catalog= <<"def">>,
+                            db= <<"hello_database">>,
+                            table= <<"hello_table">>,
+                            org_table= <<"hello_table">>,
+                            name= <<"hello_text">>,
+                            org_name= <<"hello_text">>,
+                            type=254,
+                            default = <<>>,
+                            charset_nr = 33,
+                            length= _Length,
+                            flags = _Flags,
+                            decimals = 0,
+                            decoder = _Decoder}],
+                       [[<<"Hello World!">>]],
+                       <<>>} = Result1,
+	{result_packet,_,  
+                    [#field{
+                            seq_num=_,
+                            catalog= <<"def">>,
+                            db= <<"hello_database">>,
+                            table= <<"hello_table">>,
+                            org_table= <<"hello_table">>,
+                            name= <<"hello_text">>,
+                            org_name= <<"hello_text">>,
+                            type=254,
+                            default = <<>>,
+                            charset_nr = 33,
+                            length= _Length,
+                            flags = _Flags,
+                            decimals = 0,
+                            decoder = _Decoder}],
+                       [[<<"Hello World!">>]],
+                       <<>>} = Result2,
+    ok.
 
 %% Test Case: Delete a non-existant Stored Procedure
 %%--------------------------------------------------------------------
