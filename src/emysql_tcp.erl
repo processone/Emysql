@@ -370,9 +370,8 @@ to_timestamp(Data) ->
 to_bit(<<1>>) -> 1;  %%TODO: is this right?.  Shouldn't be <<"1">> ?
 to_bit(<<0>>) -> 0.
 
-
-type_cast_row_data(Data, #field{decoder = F}) ->
-    F(Data).
+type_cast_row_data(undefined, _) -> undefined;
+type_cast_row_data(Data, #field{decoder = F}) -> F(Data).
 
 
 
