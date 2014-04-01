@@ -593,8 +593,10 @@ monitor_work(Connection0, Timeout, Args) when is_record(Connection0, emysql_conn
                             put(query_arguments, Args),
                             case Args of
                                 {transaction, _MaybeOtherConnection, Fun} ->
-                                    Parent ! {self(), Fun(fun(Query) -> 
-                                                    emysql_conn:execute(Connection, Query, []) end)};
+                                        #ok_packet{} = emysql_conn:execute(Connection, <<"START TRANSACTION;">>, []),
+                                        Result = Fun(fun(Query) -> emysql_conn:execute(Connection, Query, []) end),
+                                        #ok_packet{} = emysql_conn:execute(Connection, <<"COMMIT;">>, []),
+                                    Parent ! {self(), Result};
                                 _ ->
                                     Parent ! {self(), apply(fun emysql_conn:execute/3, Args)}
                             end
