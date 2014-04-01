@@ -99,7 +99,7 @@
             add_pool/9,
             add_pool/8, remove_pool/1, increment_pool_size/2, decrement_pool_size/2,
             prepare/2,
-            execute/2, execute/3, execute/4, execute/5,
+            execute/2, execute/3, execute/4, execute/5, transaction/3,
             default_timeout/0,
             modules/0
         ]).
@@ -489,6 +489,11 @@ execute(PoolId, StmtName, Args, Timeout) when is_atom(StmtName), is_list(Args) a
     Connection = emysql_conn_mgr:wait_for_connection(PoolId),
     monitor_work(Connection, Timeout, [Connection, StmtName, Args]).
 
+transaction(PoolId, Fun, Timeout) when is_function(Fun) ->
+    Connection = emysql_conn_mgr:wait_for_connection(PoolId),
+    monitor_work(Connection, Timeout, {transaction, Connection, Fun}).
+
+
 %% @spec execute(PoolId, Query|StmtName, Args, Timeout, nonblocking) -> Result | [Result]
 %%      PoolId = atom()
 %%      Query = binary() | string()
@@ -586,7 +591,13 @@ monitor_work(Connection0, Timeout, Args) when is_record(Connection0, emysql_conn
     {Pid, Mref} = spawn_monitor(
                     fun() ->
                             put(query_arguments, Args),
-                            Parent ! {self(), apply(fun emysql_conn:execute/3, Args)}
+                            case Args of
+                                {transaction, _MaybeOtherConnection, Fun} ->
+                                    Parent ! {self(), Fun(fun(Query) -> 
+                                                    emysql_conn:execute(Connection, Query, []) end)};
+                                _ ->
+                                    Parent ! {self(), apply(fun emysql_conn:execute/3, Args)}
+                            end
                     end),
     receive
         {'DOWN', Mref, process, Pid, {_, closed}} ->
