@@ -145,13 +145,17 @@ response(Sock, DefaultTimeout, #packet{seq_num = SeqNum, data = Data}=_Packet, B
         true ->
             ok
     end,
-    {SeqNum2, Rows, ServerStatus, Buff3} = recv_row_data(Sock, FieldList, DefaultTimeout, SeqNum1+1, Buff2),
-    { #result_packet{
-        seq_num = SeqNum2,
-        field_list = FieldList,
-        rows = Rows,
-        extra = Extra },
-      ServerStatus, Buff3 }.
+    case recv_row_data(Sock, FieldList, DefaultTimeout, SeqNum1+1, Buff2) of
+        {error, Code, Message, Buff3} ->
+            {#error_packet{seq_num = SeqNum, code = Code, status = 0, msg = binary_to_list(Message)}, ?SERVER_NO_STATUS, Buff3};
+        {SeqNum2, Rows, ServerStatus, Buff3} ->
+            { #result_packet{
+                seq_num = SeqNum2,
+                field_list = FieldList,
+                rows = Rows,
+                extra = Extra },
+              ServerStatus, Buff3 }
+    end.
 
 recv_packet_header(_Sock, _Timeout, <<PacketLength:24/little-integer, SeqNum:8/integer, Rest/binary>>) ->
         {PacketLength, SeqNum, Rest};
@@ -247,7 +251,9 @@ recv_row_data(Socket, FieldList, Timeout, SeqNum, Buff, Acc) ->
                             exit({failed_to_recv_row, Reason})
                     end;
                 {eof, Seq, NewAcc, ServerStatus, NotParsed} ->
-                    {Seq, lists:reverse(NewAcc), ServerStatus, NotParsed}
+                    {Seq, lists:reverse(NewAcc), ServerStatus, NotParsed};
+                {error, Code, Message, NotParsed} ->
+                    {error, Code, Message, NotParsed}
         end.
 
 parse_buffer(FieldList,<<PacketLength:24/little-integer, SeqNum:8/integer, PacketData:PacketLength/binary, Rest/binary>>, Acc) ->
@@ -256,6 +262,8 @@ parse_buffer(FieldList,<<PacketLength:24/little-integer, SeqNum:8/integer, Packe
             {eof, SeqNum, Acc, ServerStatus, Rest};
         <<?RESP_EOF, _/binary>> ->
             {eof, SeqNum, Acc, ?SERVER_NO_STATUS, Rest};
+        <<?RESP_ERROR, ErrorCode:16/little, ErrorMessage/binary>> ->
+            {error, ErrorCode, ErrorMessage, Rest};
         _ ->
             Row = decode_row_data(PacketData, FieldList),
             parse_buffer(FieldList,Rest, [Row|Acc])
